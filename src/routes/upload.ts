@@ -3,39 +3,101 @@ import { readdir, stat } from "fs/promises";
 
 const uploadRouter = new Hono();
 
-// File upload endpoint
+// File upload endpoint - supports single and multiple files
 uploadRouter.post("/upload", async (c) => {
   try {
     const formData = await c.req.formData();
-    const file = formData.get("file") as File;
+    const files: File[] = [];
 
-    if (!file) {
-      return c.json({ error: "No file provided" }, 400);
+    // Collect all files from form data
+    const entries = Array.from(formData.entries());
+    for (const [key, value] of entries) {
+      if (
+        value &&
+        typeof value === "object" &&
+        "name" in value &&
+        "size" in value
+      ) {
+        files.push(value as File);
+      }
     }
 
-    // Validate file size (optional - 10MB limit)
-    const maxSize = 10 * 1024 * 1024; // 10MB
-    if (file.size > maxSize) {
-      return c.json({ error: "File too large. Maximum size is 10MB" }, 400);
+    if (files.length === 0) {
+      return c.json({ error: "No files provided" }, 400);
     }
 
-    // Get file information
-    const fileInfo = {
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      lastModified: file.lastModified,
-      url: `${c.req.url.split("/upload")[0]}/files/${file.name}`,
-    };
+    // Validate total upload size (50MB limit for multiple files)
+    const maxTotalSize = 50 * 1024 * 1024; // 50MB
+    const maxFileSize = 10 * 1024 * 1024; // 10MB per file
+    let totalSize = 0;
 
-    // Here you would typically save the file to disk or cloud storage
-    // For now, we'll just return the file information
-    const bytes = await file.arrayBuffer();
-    await Bun.write(`uploads/${file.name}`, bytes);
+    for (const file of files) {
+      totalSize += file.size;
+      if (file.size > maxFileSize) {
+        return c.json(
+          {
+            error: `File "${file.name}" is too large. Maximum size per file is 10MB`,
+          },
+          400
+        );
+      }
+    }
+
+    if (totalSize > maxTotalSize) {
+      return c.json(
+        {
+          error: `Total upload size too large. Maximum total size is 50MB`,
+        },
+        400
+      );
+    }
+
+    const uploadedFiles = [];
+
+    // Process each file
+    for (const file of files) {
+      try {
+        // Generate unique filename to prevent conflicts
+        const timestamp = Date.now();
+        const randomSuffix = Math.random().toString(36).substring(2, 8);
+        const fileExtension = file.name.split(".").pop();
+        const baseName = file.name.replace(/\.[^/.]+$/, "");
+        const uniqueFileName = `${baseName}_${timestamp}_${randomSuffix}.${fileExtension}`;
+
+        // Get file information
+        const fileInfo = {
+          originalName: file.name,
+          name: uniqueFileName,
+          size: file.size,
+          type: file.type,
+          lastModified: file.lastModified,
+          url: `${c.req.url.split("/upload")[0]}/files/${uniqueFileName}`,
+        };
+
+        // Save file to disk
+        const bytes = await file.arrayBuffer();
+        await Bun.write(`uploads/${uniqueFileName}`, bytes);
+
+        uploadedFiles.push(fileInfo);
+      } catch (fileError) {
+        console.error(`Error processing file ${file.name}:`, fileError);
+        // Continue with other files even if one fails
+      }
+    }
+
+    if (uploadedFiles.length === 0) {
+      return c.json({ error: "Failed to upload any files" }, 500);
+    }
+
+    const message =
+      uploadedFiles.length === 1
+        ? "File uploaded successfully"
+        : `${uploadedFiles.length} files uploaded successfully`;
 
     return c.json({
-      message: "File uploaded successfully",
-      file: fileInfo,
+      message,
+      files: uploadedFiles,
+      count: uploadedFiles.length,
     });
   } catch (error) {
     console.error("Upload error:", error);
