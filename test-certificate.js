@@ -1,8 +1,8 @@
 // Test script for certificate generation
 const testDataBase = {
   name: "Olalekan Adekanmbi",
-  // course: "The Complete AI Guide: Learn ChatGPT, Generative AI & More",
-  course: "Making it work",
+  course: "The Complete AI Guide: Learn ChatGPT, Generative AI & More",
+  // course: "Making it work",
   instructor: "Dr. Jane Smith",
   date: "2024-01-15",
 };
@@ -49,6 +49,7 @@ async function testTemplates() {
 
 // Clean up test uploads folder
 async function cleanTestUploads() {
+  return;
   try {
     const { exitCode } = await Bun.spawn(["rm", "-rf", "uploads"]);
     if (exitCode === 0) {
