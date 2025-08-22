@@ -1,5 +1,5 @@
-import { createCanvas, loadImage } from "canvas";
 import { join } from "path";
+import sharp from "sharp";
 
 // Interface for certificate data
 export interface CertificateData {
@@ -12,21 +12,25 @@ export interface CertificateData {
 
 // Helper function to wrap text
 function wrapText(
-  ctx: any,
   text: string,
   maxWidth: number,
-  lineHeight: number
+  fontSize: number,
+  fontFamily: string = "Arial"
 ): string[] {
+  // Approximate character width (this is a rough estimation)
+  const avgCharWidth = fontSize * 0.6;
+  const maxChars = Math.floor(maxWidth / avgCharWidth);
+
   const words = text.split(" ");
   const lines: string[] = [];
   let currentLine = words[0];
 
   for (let i = 1; i < words.length; i++) {
     const word = words[i];
-    const width = ctx.measureText(currentLine + " " + word).width;
+    const testLine = currentLine + " " + word;
 
-    if (width < maxWidth) {
-      currentLine += " " + word;
+    if (testLine.length <= maxChars) {
+      currentLine = testLine;
     } else {
       lines.push(currentLine);
       currentLine = word;
@@ -37,30 +41,51 @@ function wrapText(
   return lines;
 }
 
-// Helper function to draw wrapped text
-function drawWrappedText(
-  ctx: any,
+// Helper function to create SVG text element
+function createSVGText(
   text: string,
+  x: number,
+  y: number,
+  fontSize: number,
+  fontFamily: string,
+  fontWeight: string = "normal",
+  textAnchor: string = "middle",
+  fill: string = "#000000"
+): string {
+  return `<text x="${x}" y="${y}" font-family="${fontFamily}" font-size="${fontSize}" font-weight="${fontWeight}" text-anchor="${textAnchor}" fill="${fill}">${text}</text>`;
+}
+
+// Helper function to create SVG text with wrapping
+function createWrappedSVGText(
+  text: string,
+  x: number,
+  y: number,
   maxWidth: number,
-  lineHeight: number,
-  noWrap: {
-    x: number;
-    y: number;
-    font: string;
-  },
-  wrap: {
-    x: number;
-    y: number;
-    font: string;
-  }
-): void {
-  const lines = wrapText(ctx, text, maxWidth, lineHeight);
-  ctx.font = lines.length > 1 ? wrap.font : noWrap.font;
+  fontSize: number,
+  fontFamily: string,
+  fontWeight: string = "normal",
+  textAnchor: string = "middle",
+  fill: string = "#000000",
+  lineHeight: number = fontSize * 1.2
+): string {
+  const lines = wrapText(text, maxWidth, fontSize, fontFamily);
+  let svgText = "";
 
   for (let i = 0; i < lines.length; i++) {
-    const lineY = (lines.length > 1 ? wrap.y : noWrap.y) + i * lineHeight;
-    ctx.fillText(lines[i], lines.length > 1 ? wrap.x : noWrap.x, lineY);
+    const lineY = y + i * lineHeight;
+    svgText += createSVGText(
+      lines[i],
+      x,
+      lineY,
+      fontSize,
+      fontFamily,
+      fontWeight,
+      textAnchor,
+      fill
+    );
   }
+
+  return svgText;
 }
 
 // Function to generate certificate with text overlay
@@ -69,271 +94,333 @@ export async function generateCertificate(
   data: CertificateData
 ): Promise<Buffer> {
   // Load the certificate template
-  const template = await loadImage(templatePath);
-
-  // Create canvas with template dimensions
-  const canvas = createCanvas(template.width, template.height);
-  const ctx = canvas.getContext("2d");
-
-  // Draw the template as background
-  ctx.drawImage(template, 0, 0);
+  const templateBuffer = await Bun.file(templatePath).arrayBuffer();
 
   // Extract template name from path to determine styling
   const templateName = templatePath.split("/").pop() || "1.png";
 
+  // Get template dimensions (we'll use a standard size for now)
+  const templateWidth = 2480; // Standard A4 width at 300 DPI
+  const templateHeight = 3508; // Standard A4 height at 300 DPI
+
   // Set text color based on template
   const textColor = templateName === "4.png" ? "#FFFFFF" : "#000000";
-  ctx.fillStyle = textColor;
-  ctx.textAlign = "center";
 
-  const centerX = canvas.width / 2;
+  const centerX = templateWidth / 2;
 
   // Template-specific positioning and styling
+  let svgTextElements = "";
+
   switch (templateName) {
     case "1.png":
-      // Configure fonts with larger sizes
-      const largeFont = "500px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont = "bold 280px Arial, sans-serif";
-      const regularFont = "bold 200px Arial, sans-serif";
-      const smallFont = "bold 160px Arial, sans-serif";
-
-      // Template 1: Standard layout with larger text
-      const nameY1 = canvas.height * 0.58;
-      const courseY1 = canvas.height * 0.72;
-      const instructorY1 = canvas.height * 0.84;
-      const dateY1 = canvas.height * 0.84;
-      const instructorX1 = canvas.width * 0.255;
-      const dateX1 = canvas.width * 0.75;
+      // Template 1: Standard layout
+      const nameY1 = templateHeight * 0.58;
+      const courseY1 = templateHeight * 0.72;
+      const instructorY1 = templateHeight * 0.84;
+      const dateY1 = templateHeight * 0.84;
+      const instructorX1 = templateWidth * 0.255;
+      const dateX1 = templateWidth * 0.75;
 
       // Draw recipient name
-      ctx.font = largeFont;
-      ctx.fillText(data.name, centerX, nameY1);
+      svgTextElements += createSVGText(
+        data.name,
+        centerX,
+        nameY1,
+        120,
+        "Dancing Script, Brush Script MT, cursive",
+        "normal",
+        "middle",
+        textColor
+      );
 
       // Draw course name with wrapping
-      ctx.font = mediumFont;
-      const courseMaxWidth1 = canvas.width * 0.8; // 80% of canvas width
-      const courseLineHeight1 = 240; // Slightly larger than font size
-      drawWrappedText(
-        ctx,
+      const courseMaxWidth1 = templateWidth * 0.8;
+      svgTextElements += createWrappedSVGText(
         data.course,
+        centerX,
+        courseY1,
         courseMaxWidth1,
-        courseLineHeight1,
-        {
-          x: centerX,
-          y: courseY1,
-          font: mediumFont,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.7,
-          font: regularFont,
-        }
+        80,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor,
+        100
       );
 
       // Draw instructor name
-      ctx.font = smallFont;
-      ctx.fillText(data.instructor, instructorX1, instructorY1);
+      svgTextElements += createSVGText(
+        data.instructor,
+        instructorX1,
+        instructorY1,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
 
       // Draw date
-      ctx.font = smallFont;
-      ctx.fillText(data.date, dateX1, dateY1);
+      svgTextElements += createSVGText(
+        data.date,
+        dateX1,
+        dateY1,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
       break;
 
     case "2.png":
-      // Configure fonts with larger sizes
-      const largeFont2 = "500px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont2 = "bold 280px Arial, sans-serif";
-      const regularFont2 = "bold 200px Arial, sans-serif";
-      const smallFont2 = "bold 160px Arial, sans-serif";
-
       // Template 2: Different positioning
-      const nameY2 = canvas.height * 0.545;
-      const courseY2 = canvas.height * 0.69;
-      const instructorY2 = canvas.height * 0.85;
-      const dateY2 = canvas.height * 0.85;
-      const instructorX2 = canvas.width * 0.375;
-      const dateX2 = canvas.width * 0.632;
+      const nameY2 = templateHeight * 0.545;
+      const courseY2 = templateHeight * 0.69;
+      const instructorY2 = templateHeight * 0.85;
+      const dateY2 = templateHeight * 0.85;
+      const instructorX2 = templateWidth * 0.375;
+      const dateX2 = templateWidth * 0.632;
 
-      // Draw recipient name
-      ctx.font = largeFont2;
-      ctx.fillText(data.name, centerX, nameY2);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont2;
-      const courseMaxWidth2 = canvas.width * 0.8;
-      const courseLineHeight2 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth2,
-        courseLineHeight2,
-        {
-          x: centerX,
-          y: courseY2,
-          font: mediumFont2,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.67,
-          font: regularFont2,
-        }
+      svgTextElements += createSVGText(
+        data.name,
+        centerX,
+        nameY2,
+        120,
+        "Dancing Script, Brush Script MT, cursive",
+        "normal",
+        "middle",
+        textColor
       );
 
-      // Draw instructor name
-      ctx.font = smallFont2;
-      ctx.fillText(data.instructor, instructorX2, instructorY2);
+      const courseMaxWidth2 = templateWidth * 0.8;
+      svgTextElements += createWrappedSVGText(
+        data.course,
+        centerX,
+        courseY2,
+        courseMaxWidth2,
+        80,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor,
+        100
+      );
 
-      // Draw date
-      ctx.font = smallFont2;
-      ctx.fillText(data.date, dateX2, dateY2);
+      svgTextElements += createSVGText(
+        data.instructor,
+        instructorX2,
+        instructorY2,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
+
+      svgTextElements += createSVGText(
+        data.date,
+        dateX2,
+        dateY2,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
       break;
 
     case "3.png":
-      // Configure fonts with larger sizes
-      const largeFont3 = "400px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont3 = "bold 280px Arial, sans-serif";
-      const regularFont3 = "bold 200px Arial, sans-serif";
-      const smallFont3 = "bold 160px Arial, sans-serif";
-
       // Template 3: Different positioning
-      const nameY3 = canvas.height * 0.52;
-      const courseY3 = canvas.height * 0.67;
-      const instructorY3 = canvas.height * 0.79;
-      const dateY3 = canvas.height * 0.79;
-      const instructorX3 = canvas.width * 0.25;
-      const dateX3 = canvas.width * 0.765;
+      const nameY3 = templateHeight * 0.52;
+      const courseY3 = templateHeight * 0.67;
+      const instructorY3 = templateHeight * 0.79;
+      const dateY3 = templateHeight * 0.79;
+      const instructorX3 = templateWidth * 0.25;
+      const dateX3 = templateWidth * 0.765;
 
-      // Draw recipient name
-      ctx.font = largeFont3;
-      ctx.fillText(data.name, centerX, nameY3);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont3;
-      const courseMaxWidth3 = canvas.width * 0.8;
-      const courseLineHeight3 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth3,
-        courseLineHeight3,
-        {
-          x: centerX,
-          y: courseY3,
-          font: mediumFont3,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.65,
-          font: regularFont3,
-        }
+      svgTextElements += createSVGText(
+        data.name,
+        centerX,
+        nameY3,
+        100,
+        "Dancing Script, Brush Script MT, cursive",
+        "normal",
+        "middle",
+        textColor
       );
 
-      // Draw instructor name
-      ctx.font = smallFont3;
-      ctx.fillText(data.instructor, instructorX3, instructorY3);
+      const courseMaxWidth3 = templateWidth * 0.8;
+      svgTextElements += createWrappedSVGText(
+        data.course,
+        centerX,
+        courseY3,
+        courseMaxWidth3,
+        80,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor,
+        100
+      );
 
-      // Draw date
-      ctx.font = smallFont3;
-      ctx.fillText(data.date, dateX3, dateY3);
+      svgTextElements += createSVGText(
+        data.instructor,
+        instructorX3,
+        instructorY3,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
+
+      svgTextElements += createSVGText(
+        data.date,
+        dateX3,
+        dateY3,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
       break;
 
     case "4.png":
-      // Configure fonts with larger sizes
-      const largeFont4 = "400px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont4 = "bold 280px Arial, sans-serif";
-      const regularFont4 = "bold 200px Arial, sans-serif";
-      const smallFont4 = "bold 160px Arial, sans-serif";
-
       // Template 4: White text, different positioning
-      const nameY4 = canvas.height * 0.49;
-      const courseY4 = canvas.height * 0.65;
-      const instructorY4 = canvas.height * 0.785;
-      const dateY4 = canvas.height * 0.785;
-      const instructorX4 = canvas.width * 0.316;
-      const dateX4 = canvas.width * 0.685;
+      const nameY4 = templateHeight * 0.49;
+      const courseY4 = templateHeight * 0.65;
+      const instructorY4 = templateHeight * 0.785;
+      const dateY4 = templateHeight * 0.785;
+      const instructorX4 = templateWidth * 0.316;
+      const dateX4 = templateWidth * 0.685;
 
-      // Draw recipient name
-      ctx.font = largeFont4;
-      ctx.fillText(data.name, centerX, nameY4);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont4;
-      const courseMaxWidth4 = canvas.width * 0.8;
-      const courseLineHeight4 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth4,
-        courseLineHeight4,
-        {
-          x: centerX,
-          y: courseY4,
-          font: mediumFont4,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.63,
-          font: regularFont4,
-        }
+      svgTextElements += createSVGText(
+        data.name,
+        centerX,
+        nameY4,
+        100,
+        "Dancing Script, Brush Script MT, cursive",
+        "normal",
+        "middle",
+        textColor
       );
 
-      // Draw instructor name
-      ctx.font = smallFont4;
-      ctx.fillText(data.instructor, instructorX4, instructorY4);
+      const courseMaxWidth4 = templateWidth * 0.8;
+      svgTextElements += createWrappedSVGText(
+        data.course,
+        centerX,
+        courseY4,
+        courseMaxWidth4,
+        80,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor,
+        100
+      );
 
-      // Draw date
-      ctx.font = smallFont4;
-      ctx.fillText(data.date, dateX4, dateY4);
+      svgTextElements += createSVGText(
+        data.instructor,
+        instructorX4,
+        instructorY4,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
+
+      svgTextElements += createSVGText(
+        data.date,
+        dateX4,
+        dateY4,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
       break;
 
     default:
-      // Configure fonts with larger sizes
-      const largeFont5 = "bold 300px Arial, sans-serif";
-      const mediumFont5 = "bold 280px Arial, sans-serif";
-      const regularFont5 = "bold 120px Arial, sans-serif";
-      const smallFont5 = "bold 160px Arial, sans-serif";
-
       // Fallback for unknown templates
-      const nameY = canvas.height * 0.45;
-      const courseY = canvas.height * 0.55;
-      const instructorY = canvas.height * 0.75;
-      const dateY = canvas.height * 0.75;
-      const instructorX = canvas.width * 0.3;
-      const dateX = canvas.width * 0.7;
+      const nameY = templateHeight * 0.45;
+      const courseY = templateHeight * 0.55;
+      const instructorY = templateHeight * 0.75;
+      const dateY = templateHeight * 0.75;
+      const instructorX = templateWidth * 0.3;
+      const dateX = templateWidth * 0.7;
 
-      ctx.font = largeFont5;
-      ctx.fillText(data.name, centerX, nameY);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont5;
-      const courseMaxWidth5 = canvas.width * 0.8;
-      const courseLineHeight5 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth5,
-        courseLineHeight5,
-        {
-          x: centerX,
-          y: courseY,
-          font: mediumFont5,
-        },
-        {
-          x: centerX,
-          y: courseY,
-          font: regularFont5,
-        }
+      svgTextElements += createSVGText(
+        data.name,
+        centerX,
+        nameY,
+        80,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
       );
 
-      ctx.font = smallFont5;
-      ctx.fillText(data.instructor, instructorX, instructorY);
+      const courseMaxWidth5 = templateWidth * 0.8;
+      svgTextElements += createWrappedSVGText(
+        data.course,
+        centerX,
+        courseY,
+        courseMaxWidth5,
+        80,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor,
+        100
+      );
 
-      ctx.font = smallFont5;
-      ctx.fillText(data.date, dateX, dateY);
+      svgTextElements += createSVGText(
+        data.instructor,
+        instructorX,
+        instructorY,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
+
+      svgTextElements += createSVGText(
+        data.date,
+        dateX,
+        dateY,
+        50,
+        "Arial, sans-serif",
+        "bold",
+        "middle",
+        textColor
+      );
   }
 
-  // Return the canvas as a PNG buffer
-  return canvas.toBuffer("image/png");
+  // Create SVG overlay
+  const svgOverlay = `
+    <svg width="${templateWidth}" height="${templateHeight}" xmlns="http://www.w3.org/2000/svg">
+      ${svgTextElements}
+    </svg>
+  `;
+
+  // Use sharp to composite the template with the SVG overlay
+  const certificateBuffer = await sharp(Buffer.from(templateBuffer))
+    .composite([
+      {
+        input: Buffer.from(svgOverlay),
+        top: 0,
+        left: 0,
+      },
+    ])
+    .png()
+    .toBuffer();
+
+  return certificateBuffer;
 }
 
 // Helper function for testing with boilerplate data
