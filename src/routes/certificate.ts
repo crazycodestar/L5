@@ -80,7 +80,7 @@ certificateRouter.post("/generate", async (c) => {
         name: filename,
         size: stats,
         type: "image/png",
-        url: `${c.req.url.split("/generate")[0]}/files/${filename}`,
+        url: `/files/${filename}`,
         template: templateName,
         data: body,
       },
