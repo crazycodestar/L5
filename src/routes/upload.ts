@@ -71,7 +71,7 @@ uploadRouter.post("/upload", async (c) => {
           size: file.size,
           type: file.type,
           lastModified: file.lastModified,
-          url: `/files/${uniqueFileName}`,
+          url: `${process.env.BASE_URL}/files/${uniqueFileName}`,
         };
 
         // Save file to disk
