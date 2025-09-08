@@ -1,4 +1,4 @@
-import { createCanvas, loadImage } from "canvas";
+import sharp from "sharp";
 import { join } from "path";
 
 // Interface for certificate data
@@ -10,57 +10,82 @@ export interface CertificateData {
   template?: "1.png" | "2.png" | "3.png" | "4.png";
 }
 
-// Helper function to wrap text
-function wrapText(
-  ctx: any,
+// Approximate text measurement and wrapping (SVG-based rendering does not expose ctx.measureText)
+function approximateTextWidth(text: string, fontSizePx: number): number {
+  // Rough average width factor for Latin scripts; tweak if needed
+  const averageCharWidthFactor = 0.6;
+  return text.length * fontSizePx * averageCharWidthFactor;
+}
+
+function wrapTextApprox(
   text: string,
   maxWidth: number,
-  lineHeight: number
+  fontSizePx: number
 ): string[] {
   const words = text.split(" ");
   const lines: string[] = [];
-  let currentLine = words[0];
+  let currentLine = words.length > 0 ? words[0] : "";
 
   for (let i = 1; i < words.length; i++) {
-    const word = words[i];
-    const width = ctx.measureText(currentLine + " " + word).width;
-
-    if (width < maxWidth) {
-      currentLine += " " + word;
+    const candidate =
+      currentLine.length > 0 ? currentLine + " " + words[i] : words[i];
+    const width = approximateTextWidth(candidate, fontSizePx);
+    if (width <= maxWidth) {
+      currentLine = candidate;
     } else {
-      lines.push(currentLine);
-      currentLine = word;
+      if (currentLine.length > 0) lines.push(currentLine);
+      currentLine = words[i];
     }
   }
 
-  lines.push(currentLine);
+  if (currentLine.length > 0) lines.push(currentLine);
   return lines;
 }
 
-// Helper function to draw wrapped text
-function drawWrappedText(
-  ctx: any,
-  text: string,
-  maxWidth: number,
-  lineHeight: number,
-  noWrap: {
-    x: number;
-    y: number;
-    font: string;
-  },
-  wrap: {
-    x: number;
-    y: number;
-    font: string;
-  }
-): void {
-  const lines = wrapText(ctx, text, maxWidth, lineHeight);
-  ctx.font = lines.length > 1 ? wrap.font : noWrap.font;
+function svgTextBlock(params: {
+  x: number;
+  y: number;
+  fontFamily: string;
+  fontWeight?: string;
+  fontSizePx: number;
+  fill: string;
+  textAnchor: "start" | "middle" | "end";
+  lines: string[];
+  lineHeightPx: number;
+}): string {
+  const {
+    x,
+    y,
+    fontFamily,
+    fontWeight,
+    fontSizePx,
+    fill,
+    textAnchor,
+    lines,
+    lineHeightPx,
+  } = params;
 
-  for (let i = 0; i < lines.length; i++) {
-    const lineY = (lines.length > 1 ? wrap.y : noWrap.y) + i * lineHeight;
-    ctx.fillText(lines[i], lines.length > 1 ? wrap.x : noWrap.x, lineY);
-  }
+  const tspans = lines
+    .map((line, idx) => {
+      const dy = idx === 0 ? 0 : lineHeightPx;
+      return `<tspan x="${x}" dy="${dy}">${escapeXml(line)}</tspan>`;
+    })
+    .join("");
+
+  return `<text x="${x}" y="${y}" fill="${fill}" text-anchor="${textAnchor}" font-family="${escapeXml(
+    fontFamily
+  )}" ${
+    fontWeight ? `font-weight="${fontWeight}"` : ""
+  } font-size="${fontSizePx}">${tspans}</text>`;
+}
+
+function escapeXml(input: string): string {
+  return input
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 // Function to generate certificate with text overlay
@@ -68,272 +93,465 @@ export async function generateCertificate(
   templatePath: string,
   data: CertificateData
 ): Promise<Buffer> {
-  // Load the certificate template
-  const template = await loadImage(templatePath);
-
-  // Create canvas with template dimensions
-  const canvas = createCanvas(template.width, template.height);
-  const ctx = canvas.getContext("2d");
-
-  // Draw the template as background
-  ctx.drawImage(template, 0, 0);
+  // Read template dimensions
+  const image = sharp(templatePath);
+  const metadata = await image.metadata();
+  const width = metadata.width || 3508; // sensible default (A4 @ 300dpi width)
+  const height = metadata.height || 2480; // sensible default (A4 @ 300dpi height)
 
   // Extract template name from path to determine styling
   const templateName = templatePath.split("/").pop() || "1.png";
 
   // Set text color based on template
   const textColor = templateName === "4.png" ? "#FFFFFF" : "#000000";
-  ctx.fillStyle = textColor;
-  ctx.textAlign = "center";
 
-  const centerX = canvas.width / 2;
+  const centerX = width / 2;
+
+  // We will build an SVG overlay with all texts, then composite over the template
+  const svgParts: string[] = [
+    `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`,
+  ];
 
   // Template-specific positioning and styling
   switch (templateName) {
     case "1.png":
       // Configure fonts with larger sizes
-      const largeFont = "500px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont = "bold 280px Arial, sans-serif";
-      const regularFont = "bold 200px Arial, sans-serif";
-      const smallFont = "bold 160px Arial, sans-serif";
+      const fontFamily1 = "Arial, sans-serif";
+      const scriptFamily1 = "'Dancing Script', 'Brush Script MT', cursive";
+      const largeSize1 = 500;
+      const mediumSize1 = 280;
+      const regularSize1 = 200;
+      const smallSize1 = 160;
 
       // Template 1: Standard layout with larger text
-      const nameY1 = canvas.height * 0.58;
-      const courseY1 = canvas.height * 0.72;
-      const instructorY1 = canvas.height * 0.84;
-      const dateY1 = canvas.height * 0.84;
-      const instructorX1 = canvas.width * 0.255;
-      const dateX1 = canvas.width * 0.75;
+      const nameY1 = height * 0.58;
+      const courseY1 = height * 0.72;
+      const instructorY1 = height * 0.84;
+      const dateY1 = height * 0.84;
+      const instructorX1 = width * 0.255;
+      const dateX1 = width * 0.75;
 
-      // Draw recipient name
-      ctx.font = largeFont;
-      ctx.fillText(data.name, centerX, nameY1);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont;
-      const courseMaxWidth1 = canvas.width * 0.8; // 80% of canvas width
-      const courseLineHeight1 = 240; // Slightly larger than font size
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth1,
-        courseLineHeight1,
-        {
+      // Recipient name (script font, centered)
+      svgParts.push(
+        svgTextBlock({
           x: centerX,
-          y: courseY1,
-          font: mediumFont,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.7,
-          font: regularFont,
-        }
+          y: nameY1,
+          fontFamily: scriptFamily1,
+          fontWeight: undefined,
+          fontSizePx: largeSize1,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.name],
+          lineHeightPx: largeSize1,
+        })
       );
 
-      // Draw instructor name
-      ctx.font = smallFont;
-      ctx.fillText(data.instructor, instructorX1, instructorY1);
+      // Course name with wrapping
+      const courseMaxWidth1 = width * 0.8;
+      const courseLineHeight1 = 240;
+      const courseLines1 = wrapTextApprox(
+        data.course,
+        courseMaxWidth1,
+        mediumSize1
+      );
+      const courseFontSize1 =
+        courseLines1.length > 1 ? regularSize1 : mediumSize1;
+      const courseStartY1 = courseLines1.length > 1 ? height * 0.7 : courseY1;
+      svgParts.push(
+        svgTextBlock({
+          x: centerX,
+          y: courseStartY1,
+          fontFamily: fontFamily1,
+          fontWeight: "bold",
+          fontSizePx: courseFontSize1,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: courseLines1,
+          lineHeightPx: courseLineHeight1,
+        })
+      );
 
-      // Draw date
-      ctx.font = smallFont;
-      ctx.fillText(data.date, dateX1, dateY1);
+      // Instructor and Date
+      svgParts.push(
+        svgTextBlock({
+          x: instructorX1,
+          y: instructorY1,
+          fontFamily: fontFamily1,
+          fontWeight: "bold",
+          fontSizePx: smallSize1,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.instructor],
+          lineHeightPx: smallSize1,
+        })
+      );
+      svgParts.push(
+        svgTextBlock({
+          x: dateX1,
+          y: dateY1,
+          fontFamily: fontFamily1,
+          fontWeight: "bold",
+          fontSizePx: smallSize1,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.date],
+          lineHeightPx: smallSize1,
+        })
+      );
       break;
 
     case "2.png":
       // Configure fonts with larger sizes
-      const largeFont2 = "500px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont2 = "bold 280px Arial, sans-serif";
-      const regularFont2 = "bold 200px Arial, sans-serif";
-      const smallFont2 = "bold 160px Arial, sans-serif";
+      const fontFamily2 = "Arial, sans-serif";
+      const scriptFamily2 = "'Dancing Script', 'Brush Script MT', cursive";
+      const largeSize2 = 500;
+      const mediumSize2 = 280;
+      const regularSize2 = 200;
+      const smallSize2 = 160;
 
       // Template 2: Different positioning
-      const nameY2 = canvas.height * 0.545;
-      const courseY2 = canvas.height * 0.69;
-      const instructorY2 = canvas.height * 0.85;
-      const dateY2 = canvas.height * 0.85;
-      const instructorX2 = canvas.width * 0.375;
-      const dateX2 = canvas.width * 0.632;
+      const nameY2 = height * 0.545;
+      const courseY2 = height * 0.69;
+      const instructorY2 = height * 0.85;
+      const dateY2 = height * 0.85;
+      const instructorX2 = width * 0.375;
+      const dateX2 = width * 0.632;
 
-      // Draw recipient name
-      ctx.font = largeFont2;
-      ctx.fillText(data.name, centerX, nameY2);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont2;
-      const courseMaxWidth2 = canvas.width * 0.8;
-      const courseLineHeight2 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth2,
-        courseLineHeight2,
-        {
+      // Recipient name
+      svgParts.push(
+        svgTextBlock({
           x: centerX,
-          y: courseY2,
-          font: mediumFont2,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.67,
-          font: regularFont2,
-        }
+          y: nameY2,
+          fontFamily: scriptFamily2,
+          fontWeight: undefined,
+          fontSizePx: largeSize2,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.name],
+          lineHeightPx: largeSize2,
+        })
       );
 
-      // Draw instructor name
-      ctx.font = smallFont2;
-      ctx.fillText(data.instructor, instructorX2, instructorY2);
+      // Course name with wrapping
+      const courseMaxWidth2 = width * 0.8;
+      const courseLineHeight2 = 240;
+      const courseLines2 = wrapTextApprox(
+        data.course,
+        courseMaxWidth2,
+        mediumSize2
+      );
+      const courseFontSize2 =
+        courseLines2.length > 1 ? regularSize2 : mediumSize2;
+      const courseStartY2 = courseLines2.length > 1 ? height * 0.67 : courseY2;
+      svgParts.push(
+        svgTextBlock({
+          x: centerX,
+          y: courseStartY2,
+          fontFamily: fontFamily2,
+          fontWeight: "bold",
+          fontSizePx: courseFontSize2,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: courseLines2,
+          lineHeightPx: courseLineHeight2,
+        })
+      );
 
-      // Draw date
-      ctx.font = smallFont2;
-      ctx.fillText(data.date, dateX2, dateY2);
+      // Instructor and Date
+      svgParts.push(
+        svgTextBlock({
+          x: instructorX2,
+          y: instructorY2,
+          fontFamily: fontFamily2,
+          fontWeight: "bold",
+          fontSizePx: smallSize2,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.instructor],
+          lineHeightPx: smallSize2,
+        })
+      );
+      svgParts.push(
+        svgTextBlock({
+          x: dateX2,
+          y: dateY2,
+          fontFamily: fontFamily2,
+          fontWeight: "bold",
+          fontSizePx: smallSize2,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.date],
+          lineHeightPx: smallSize2,
+        })
+      );
       break;
 
     case "3.png":
       // Configure fonts with larger sizes
-      const largeFont3 = "400px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont3 = "bold 280px Arial, sans-serif";
-      const regularFont3 = "bold 200px Arial, sans-serif";
-      const smallFont3 = "bold 160px Arial, sans-serif";
+      const fontFamily3 = "Arial, sans-serif";
+      const scriptFamily3 = "'Dancing Script', 'Brush Script MT', cursive";
+      const largeSize3 = 400;
+      const mediumSize3 = 280;
+      const regularSize3 = 200;
+      const smallSize3 = 160;
 
       // Template 3: Different positioning
-      const nameY3 = canvas.height * 0.52;
-      const courseY3 = canvas.height * 0.67;
-      const instructorY3 = canvas.height * 0.79;
-      const dateY3 = canvas.height * 0.79;
-      const instructorX3 = canvas.width * 0.25;
-      const dateX3 = canvas.width * 0.765;
+      const nameY3 = height * 0.52;
+      const courseY3 = height * 0.67;
+      const instructorY3 = height * 0.79;
+      const dateY3 = height * 0.79;
+      const instructorX3 = width * 0.25;
+      const dateX3 = width * 0.765;
 
-      // Draw recipient name
-      ctx.font = largeFont3;
-      ctx.fillText(data.name, centerX, nameY3);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont3;
-      const courseMaxWidth3 = canvas.width * 0.8;
-      const courseLineHeight3 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth3,
-        courseLineHeight3,
-        {
+      // Recipient name
+      svgParts.push(
+        svgTextBlock({
           x: centerX,
-          y: courseY3,
-          font: mediumFont3,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.65,
-          font: regularFont3,
-        }
+          y: nameY3,
+          fontFamily: scriptFamily3,
+          fontWeight: undefined,
+          fontSizePx: largeSize3,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.name],
+          lineHeightPx: largeSize3,
+        })
       );
 
-      // Draw instructor name
-      ctx.font = smallFont3;
-      ctx.fillText(data.instructor, instructorX3, instructorY3);
+      // Course name with wrapping
+      const courseMaxWidth3 = width * 0.8;
+      const courseLineHeight3 = 240;
+      const courseLines3 = wrapTextApprox(
+        data.course,
+        courseMaxWidth3,
+        mediumSize3
+      );
+      const courseFontSize3 =
+        courseLines3.length > 1 ? regularSize3 : mediumSize3;
+      const courseStartY3 = courseLines3.length > 1 ? height * 0.65 : courseY3;
+      svgParts.push(
+        svgTextBlock({
+          x: centerX,
+          y: courseStartY3,
+          fontFamily: fontFamily3,
+          fontWeight: "bold",
+          fontSizePx: courseFontSize3,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: courseLines3,
+          lineHeightPx: courseLineHeight3,
+        })
+      );
 
-      // Draw date
-      ctx.font = smallFont3;
-      ctx.fillText(data.date, dateX3, dateY3);
+      // Instructor and Date
+      svgParts.push(
+        svgTextBlock({
+          x: instructorX3,
+          y: instructorY3,
+          fontFamily: fontFamily3,
+          fontWeight: "bold",
+          fontSizePx: smallSize3,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.instructor],
+          lineHeightPx: smallSize3,
+        })
+      );
+      svgParts.push(
+        svgTextBlock({
+          x: dateX3,
+          y: dateY3,
+          fontFamily: fontFamily3,
+          fontWeight: "bold",
+          fontSizePx: smallSize3,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.date],
+          lineHeightPx: smallSize3,
+        })
+      );
       break;
 
     case "4.png":
       // Configure fonts with larger sizes
-      const largeFont4 = "400px 'Dancing Script', 'Brush Script MT', cursive";
-      const mediumFont4 = "bold 280px Arial, sans-serif";
-      const regularFont4 = "bold 200px Arial, sans-serif";
-      const smallFont4 = "bold 160px Arial, sans-serif";
+      const fontFamily4 = "Arial, sans-serif";
+      const scriptFamily4 = "'Dancing Script', 'Brush Script MT', cursive";
+      const largeSize4 = 400;
+      const mediumSize4 = 280;
+      const regularSize4 = 200;
+      const smallSize4 = 160;
 
       // Template 4: White text, different positioning
-      const nameY4 = canvas.height * 0.49;
-      const courseY4 = canvas.height * 0.65;
-      const instructorY4 = canvas.height * 0.785;
-      const dateY4 = canvas.height * 0.785;
-      const instructorX4 = canvas.width * 0.316;
-      const dateX4 = canvas.width * 0.685;
+      const nameY4 = height * 0.49;
+      const courseY4 = height * 0.65;
+      const instructorY4 = height * 0.785;
+      const dateY4 = height * 0.785;
+      const instructorX4 = width * 0.316;
+      const dateX4 = width * 0.685;
 
-      // Draw recipient name
-      ctx.font = largeFont4;
-      ctx.fillText(data.name, centerX, nameY4);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont4;
-      const courseMaxWidth4 = canvas.width * 0.8;
-      const courseLineHeight4 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth4,
-        courseLineHeight4,
-        {
+      // Recipient name
+      svgParts.push(
+        svgTextBlock({
           x: centerX,
-          y: courseY4,
-          font: mediumFont4,
-        },
-        {
-          x: centerX,
-          y: canvas.height * 0.63,
-          font: regularFont4,
-        }
+          y: nameY4,
+          fontFamily: scriptFamily4,
+          fontWeight: undefined,
+          fontSizePx: largeSize4,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.name],
+          lineHeightPx: largeSize4,
+        })
       );
 
-      // Draw instructor name
-      ctx.font = smallFont4;
-      ctx.fillText(data.instructor, instructorX4, instructorY4);
+      // Course name with wrapping
+      const courseMaxWidth4 = width * 0.8;
+      const courseLineHeight4 = 240;
+      const courseLines4 = wrapTextApprox(
+        data.course,
+        courseMaxWidth4,
+        mediumSize4
+      );
+      const courseFontSize4 =
+        courseLines4.length > 1 ? regularSize4 : mediumSize4;
+      const courseStartY4 = courseLines4.length > 1 ? height * 0.63 : courseY4;
+      svgParts.push(
+        svgTextBlock({
+          x: centerX,
+          y: courseStartY4,
+          fontFamily: fontFamily4,
+          fontWeight: "bold",
+          fontSizePx: courseFontSize4,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: courseLines4,
+          lineHeightPx: courseLineHeight4,
+        })
+      );
 
-      // Draw date
-      ctx.font = smallFont4;
-      ctx.fillText(data.date, dateX4, dateY4);
+      // Instructor and Date
+      svgParts.push(
+        svgTextBlock({
+          x: instructorX4,
+          y: instructorY4,
+          fontFamily: fontFamily4,
+          fontWeight: "bold",
+          fontSizePx: smallSize4,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.instructor],
+          lineHeightPx: smallSize4,
+        })
+      );
+      svgParts.push(
+        svgTextBlock({
+          x: dateX4,
+          y: dateY4,
+          fontFamily: fontFamily4,
+          fontWeight: "bold",
+          fontSizePx: smallSize4,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.date],
+          lineHeightPx: smallSize4,
+        })
+      );
       break;
 
     default:
       // Configure fonts with larger sizes
-      const largeFont5 = "bold 300px Arial, sans-serif";
-      const mediumFont5 = "bold 280px Arial, sans-serif";
-      const regularFont5 = "bold 120px Arial, sans-serif";
-      const smallFont5 = "bold 160px Arial, sans-serif";
+      const fontFamily5 = "Arial, sans-serif";
+      const largeSize5 = 300;
+      const mediumSize5 = 280;
+      const regularSize5 = 120;
+      const smallSize5 = 160;
 
       // Fallback for unknown templates
-      const nameY = canvas.height * 0.45;
-      const courseY = canvas.height * 0.55;
-      const instructorY = canvas.height * 0.75;
-      const dateY = canvas.height * 0.75;
-      const instructorX = canvas.width * 0.3;
-      const dateX = canvas.width * 0.7;
+      const nameY = height * 0.45;
+      const courseY = height * 0.55;
+      const instructorY = height * 0.75;
+      const dateY = height * 0.75;
+      const instructorX = width * 0.3;
+      const dateX = width * 0.7;
 
-      ctx.font = largeFont5;
-      ctx.fillText(data.name, centerX, nameY);
-
-      // Draw course name with wrapping
-      ctx.font = mediumFont5;
-      const courseMaxWidth5 = canvas.width * 0.8;
-      const courseLineHeight5 = 240;
-      drawWrappedText(
-        ctx,
-        data.course,
-        courseMaxWidth5,
-        courseLineHeight5,
-        {
+      // Name
+      svgParts.push(
+        svgTextBlock({
           x: centerX,
-          y: courseY,
-          font: mediumFont5,
-        },
-        {
-          x: centerX,
-          y: courseY,
-          font: regularFont5,
-        }
+          y: nameY,
+          fontFamily: fontFamily5,
+          fontWeight: "bold",
+          fontSizePx: largeSize5,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.name],
+          lineHeightPx: largeSize5,
+        })
       );
 
-      ctx.font = smallFont5;
-      ctx.fillText(data.instructor, instructorX, instructorY);
+      // Course
+      const courseMaxWidth5 = width * 0.8;
+      const courseLineHeight5 = 240;
+      const courseLines5 = wrapTextApprox(
+        data.course,
+        courseMaxWidth5,
+        mediumSize5
+      );
+      const courseFontSize5 =
+        courseLines5.length > 1 ? regularSize5 : mediumSize5;
+      svgParts.push(
+        svgTextBlock({
+          x: centerX,
+          y: courseY,
+          fontFamily: fontFamily5,
+          fontWeight: "bold",
+          fontSizePx: courseFontSize5,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: courseLines5,
+          lineHeightPx: courseLineHeight5,
+        })
+      );
 
-      ctx.font = smallFont5;
-      ctx.fillText(data.date, dateX, dateY);
+      // Instructor and Date
+      svgParts.push(
+        svgTextBlock({
+          x: instructorX,
+          y: instructorY,
+          fontFamily: fontFamily5,
+          fontWeight: "bold",
+          fontSizePx: smallSize5,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.instructor],
+          lineHeightPx: smallSize5,
+        })
+      );
+      svgParts.push(
+        svgTextBlock({
+          x: dateX,
+          y: dateY,
+          fontFamily: fontFamily5,
+          fontWeight: "bold",
+          fontSizePx: smallSize5,
+          fill: textColor,
+          textAnchor: "middle",
+          lines: [data.date],
+          lineHeightPx: smallSize5,
+        })
+      );
   }
 
-  // Return the canvas as a PNG buffer
-  return canvas.toBuffer("image/png");
+  svgParts.push("</svg>");
+  const svgOverlay = Buffer.from(svgParts.join(""));
+
+  // Composite SVG overlay on top of the template image
+  const output = await sharp(templatePath)
+    .composite([{ input: svgOverlay, top: 0, left: 0 }])
+    .png()
+    .toBuffer();
+
+  return output;
 }
 
 // Helper function for testing with boilerplate data
